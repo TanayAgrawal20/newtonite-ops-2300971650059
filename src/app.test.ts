@@ -500,6 +500,15 @@ describe("PATCH /api/work-items/:id", () => {
   }
 
   async function cleanupTestItem(itemId: string) {
+    await prisma.outboxJob.deleteMany({
+      where: {
+        payload: {
+          path: ["workItemId"],
+          equals: itemId,
+        },
+      },
+    });
+
     await prisma.activityEvent.deleteMany({
       where: { workItemId: itemId },
     });
