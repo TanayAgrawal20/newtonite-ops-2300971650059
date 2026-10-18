@@ -14,6 +14,8 @@ Newtonite Ops is a team-based work-item management application for creating, ass
 - Idempotency keys for safe retries of work-item creation.
 - Transactional activity events and a PostgreSQL-backed outbox with retry handling.
 - Dashboard sections for assigned work, urgent unassigned work, and items awaiting approval.
+- Cursor-based pagination with stable ordering, search, and filtering.
+- Work-item comments with team-level authorization.
 
 ## Tech Stack
 
@@ -36,7 +38,7 @@ Install the following before running the project:
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone https://github.com/TanayAgrawal20/newtonite-ops-2300971650059.git
 cd newtonite-ops
 ```
 
@@ -196,13 +198,11 @@ PostgreSQL + Prisma
 
 ## Known Limitations
 
-- The current list API uses page-based pagination; cursor pagination remains a planned improvement.
-- Seed data currently contains three teams and nine users. A few thousand sample work items should be added to demonstrate pagination under larger data volumes.
-- The outbox worker validates supported events and referenced records, then marks valid jobs completed. A meaningful external side effect, such as notification delivery, and dedicated idempotency tests for that side effect remain future work.
-- Comments on work items are not yet implemented.
-- The frontend's conflict-message and optimistic-update rollback behavior should be verified before release.
-- Docker Compose currently starts PostgreSQL; the backend and frontend are started separately using the commands above.
+- The outbox supports persistent job records and retry handling, but actual external notification delivery is not implemented.
+- The scale-seed script can create 5,000 synthetic work items for testing pagination and list performance; these records are demonstration data, not production workload benchmarks.
+- Docker Compose starts PostgreSQL only. The backend and frontend must be started separately using the commands above.
 - Email delivery, file attachments, SSO, and real-time WebSocket updates are outside the current scope.
+- The application is a local demonstration and has not been presented as production-hardened or load-tested.
 
 
 ## Engineering Decisions
