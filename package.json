@@ -9,7 +9,8 @@
     "dev": "tsx watch src/server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:scale": "tsx prisma/seed-scale.ts"
+    "seed:scale": "tsx prisma/seed-scale.ts",
+    "worker": "tsx src/modules/outbox/outbox.worker.ts"
   },
   "keywords": [],
   "author": "",
