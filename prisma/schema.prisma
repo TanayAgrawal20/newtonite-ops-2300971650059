@@ -1,0 +1,179 @@
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum GlobalRole {
+  ADMIN
+  USER
+}
+
+enum TeamRole {
+  VIEWER
+  MEMBER
+  LEAD
+  ADMIN
+}
+
+enum WorkItemType {
+  TASK
+  BUG
+  INCIDENT
+  REQUEST
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum WorkItemStatus {
+  OPEN
+  IN_PROGRESS
+  AWAITING_APPROVAL
+  RESOLVED
+  CLOSED
+}
+
+enum ActivityAction {
+  CREATED
+  UPDATED
+  CLAIMED
+  ASSIGNED
+  STATUS_CHANGED
+  APPROVED
+  REJECTED
+  COMMENTED
+}
+
+enum OutboxJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  name         String
+  email        String       @unique
+  passwordHash String
+  globalRole   GlobalRole   @default(USER)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  memberships  TeamMember[]
+  createdItems WorkItem[]   @relation("WorkItemCreator")
+  assignedItems WorkItem[]  @relation("WorkItemAssignee")
+  activities   ActivityEvent[] @relation("ActivityActor")
+}
+
+model Team {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String       @unique
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  members     TeamMember[]
+  workItems   WorkItem[]
+}
+
+model TeamMember {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  teamId    String   @db.Uuid
+  role      TeamRole @default(MEMBER)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
+  @@index([teamId, role])
+}
+
+model WorkItem {
+  id          String         @id @default(uuid()) @db.Uuid
+  title       String
+  description String?
+  type        WorkItemType   @default(TASK)
+  priority    Priority       @default(MEDIUM)
+  status      WorkItemStatus @default(OPEN)
+
+  teamId      String         @db.Uuid
+  creatorId   String         @db.Uuid
+  assigneeId  String?        @db.Uuid
+
+  dueDate     DateTime?
+  version     Int            @default(1)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  team       Team  @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  creator    User  @relation("WorkItemCreator", fields: [creatorId], references: [id], onDelete: Restrict)
+  assignee   User? @relation("WorkItemAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  activities ActivityEvent[]
+
+  @@index([teamId, status, priority])
+  @@index([assigneeId, status, updatedAt])
+  @@index([teamId, createdAt])
+  @@index([dueDate, status])
+}
+
+model ActivityEvent {
+  id          String         @id @default(uuid()) @db.Uuid
+  workItemId  String         @db.Uuid
+  actorId     String         @db.Uuid
+  action      ActivityAction
+  fromStatus  WorkItemStatus?
+  toStatus    WorkItemStatus?
+  details     Json?
+  createdAt   DateTime       @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  actor    User     @relation("ActivityActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([workItemId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  key            String   @db.VarChar(255)
+  actorId        String   @db.Uuid
+  requestHash    String   @db.VarChar(64)
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([actorId, key])
+  @@index([expiresAt])
+}
+
+model OutboxJob {
+  id          String         @id @default(uuid()) @db.Uuid
+  eventType   String         @db.VarChar(100)
+  payload     Json
+  status      OutboxJobStatus @default(PENDING)
+  attempts    Int            @default(0)
+  maxAttempts Int            @default(5)
+  availableAt DateTime       @default(now())
+  lockedAt    DateTime?
+  processedAt DateTime?
+  lastError   String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([status, availableAt, createdAt])
+  @@index([status, lockedAt])
+}
