@@ -4,7 +4,8 @@ import { prisma } from "../../lib/prisma";
 export type OutboxPayload = {
   workItemId: string;
   actorId: string;
-  version: number;
+  version?: number;
+  commentId?: string;
 };
 
 export async function enqueueOutboxJob(
@@ -22,7 +23,6 @@ export async function enqueueOutboxJob(
     },
   });
 }
-
 
 export async function processOutboxBatch(batchSize = 10) {
   const safeBatchSize = Math.max(1, Math.min(Math.floor(batchSize), 100));
@@ -83,6 +83,7 @@ export async function processOutboxBatch(batchSize = 10) {
         "WORK_ITEM_STATUS_CHANGED",
         "WORK_ITEM_CLAIMED",
         "WORK_ITEM_UPDATED",
+        "WORK_ITEM_COMMENTED",
       ]);
 
       if (!supportedEvents.has(job.eventType)) {
@@ -93,10 +94,23 @@ export async function processOutboxBatch(batchSize = 10) {
 
       if (
         typeof payload.workItemId !== "string" ||
-        typeof payload.actorId !== "string" ||
-        typeof payload.version !== "number"
+        typeof payload.actorId !== "string"
       ) {
         throw new Error("Invalid outbox payload");
+      }
+
+      if (
+        job.eventType === "WORK_ITEM_COMMENTED" &&
+        typeof payload.commentId !== "string"
+      ) {
+        throw new Error("Comment outbox event requires commentId");
+      }
+
+      if (
+        job.eventType !== "WORK_ITEM_COMMENTED" &&
+        typeof payload.version !== "number"
+      ) {
+        throw new Error("Work-item outbox event requires version");
       }
 
       // Confirm that the event's referenced records still exist.
@@ -111,6 +125,21 @@ export async function processOutboxBatch(batchSize = 10) {
           select: { id: true },
         }),
       ]);
+
+      if (job.eventType === "WORK_ITEM_COMMENTED") {
+        const comment = await prisma.comment.findUnique({
+          where: { id: payload.commentId! },
+          select: { id: true, workItemId: true, authorId: true },
+        });
+
+        if (
+          !comment ||
+          comment.workItemId !== payload.workItemId ||
+          comment.authorId !== payload.actorId
+        ) {
+          throw new Error("Comment outbox event references an invalid comment");
+        }
+      }
 
       if (!workItem || !actor) {
         throw new Error("Outbox event references a missing work item or actor");

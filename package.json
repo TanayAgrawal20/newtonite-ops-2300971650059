@@ -8,7 +8,8 @@
     "start": "node dist/src/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed:scale": "tsx prisma/seed-scale.ts"
   },
   "keywords": [],
   "author": "",

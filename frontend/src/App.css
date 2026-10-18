@@ -182,3 +182,51 @@
     border-right-color: var(--border);
   }
 }
+
+/* Work item comments */
+.comments-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+}
+
+.comments-list {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.comment-entry {
+  padding: 12px 14px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+
+.comment-entry strong {
+  display: block;
+}
+
+.comment-entry time {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.comment-entry p {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+}
+
+.comment-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.comment-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}

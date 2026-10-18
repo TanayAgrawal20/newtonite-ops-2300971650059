@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Activity,
@@ -15,6 +15,14 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api";
+import {
+  defaultWorkItemListFilters,
+  emptyCursorHistory,
+  goToNextPage,
+  goToPreviousPage,
+  resetCursorHistory,
+  type WorkItemListFilters,
+} from "./workItemsListState";
 
 type WorkItem = {
   id: string;
@@ -41,8 +49,16 @@ type TeamMembership = {
 };
 
 type CurrentUser = {
+  id: string;
   globalRole: "ADMIN" | "USER";
   memberships: TeamMembership[];
+};
+
+type WorkItemListResponse = {
+  items: WorkItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  limit: number;
 };
 
 type ActivityEvent = {
@@ -52,6 +68,16 @@ type ActivityEvent = {
   toStatus?: string | null;
   createdAt: string;
   actor?: { name?: string; email?: string };
+};
+
+type WorkItemComment = {
+  id: string;
+  content: string;
+  createdAt: string;
+  author?: {
+    name?: string;
+    email?: string;
+  };
 };
 
 const STATUSES = [
@@ -94,17 +120,25 @@ export default function WorkItems() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [priorityFilter, setPriorityFilter] = useState("");
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [filters, setFilters] = useState<WorkItemListFilters>(
+    defaultWorkItemListFilters,
+  );
+  const [cursorState, setCursorState] = useState(emptyCursorHistory);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [resultCount, setResultCount] = useState(0);
+  const requestSequence = useRef(0);
 
   const [showCreate, setShowCreate] = useState(false);
   const [activityItem, setActivityItem] = useState<WorkItem | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
+  const [comments, setComments] = useState<WorkItemComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentText, setCommentText] = useState("");
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [commentError, setCommentError] = useState("");
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -113,31 +147,53 @@ export default function WorkItems() {
   const [teamId, setTeamId] = useState("");
   const [dueDate, setDueDate] = useState("");
 
-  const loadItems = useCallback(async () => {
+  const loadItems = useCallback(async (cursorOverride?: string | null) => {
+    const sequence = requestSequence.current + 1;
+    requestSequence.current = sequence;
     setLoading(true);
     setError("");
 
     try {
-      const params: Record<string, string | number> = { page, limit: 10 };
-      if (search.trim()) params.search = search.trim();
-      if (statusFilter) params.status = statusFilter;
-      if (priorityFilter) params.priority = priorityFilter;
+      const params: Record<string, string | number> = {
+        limit: filters.limit,
+        sort: filters.sort,
+      };
+      if (filters.search.trim()) params.search = filters.search.trim();
+      if (filters.status) params.status = filters.status;
+      if (filters.priority) params.priority = filters.priority;
+      if (filters.type) params.type = filters.type;
+      if (filters.teamId) params.teamId = filters.teamId;
+      if (filters.assigneeId) params.assigneeId = filters.assigneeId;
+      const cursor =
+        cursorOverride !== undefined ? cursorOverride : cursorState.cursor;
+      if (cursor) params.cursor = cursor;
 
       const response = await api.get("/work-items", { params });
-      const payload = response.data?.data;
-      const list = Array.isArray(payload) ? payload : payload?.items;
 
-      setItems(Array.isArray(list) ? list : []);
-      setTotalPages(
-        Number(payload?.totalPages ?? response.data?.meta?.totalPages ?? 1) ||
-          1,
-      );
+      if (sequence !== requestSequence.current) {
+        return;
+      }
+
+      const payload = response.data?.data as WorkItemListResponse | WorkItem[];
+      const list = Array.isArray(payload) ? payload : payload?.items;
+      const itemsOnPage = Array.isArray(list) ? list : [];
+
+      setItems(itemsOnPage);
+      setResultCount(itemsOnPage.length);
+      setHasMore(Array.isArray(payload) ? false : Boolean(payload?.hasMore));
+      setNextCursor(Array.isArray(payload) ? null : payload?.nextCursor ?? null);
     } catch (err: unknown) {
+      if (sequence !== requestSequence.current) {
+        return;
+      }
+
       setError(getErrorMessage(err));
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) {
+        setLoading(false);
+      }
     }
-  }, [page, search, statusFilter, priorityFilter]);
+  }, [cursorState.cursor, filters]);
 
   const loadTeams = useCallback(async () => {
     try {
@@ -171,7 +227,7 @@ export default function WorkItems() {
     void loadItems();
     void loadTeams();
     void loadCurrentUser();
-  }, [navigate, loadItems, loadTeams]);
+  }, [navigate, loadItems, loadTeams, loadCurrentUser]);
 
   async function createItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -201,9 +257,9 @@ export default function WorkItems() {
       setPriority("MEDIUM");
       setDueDate("");
       setShowCreate(false);
-      setPage(1);
+      setCursorState(resetCursorHistory());
       setNotice("Work item created successfully.");
-      await loadItems();
+      await loadItems(null);
     } catch (err: unknown) {
       setError(getErrorMessage(err));
     }
@@ -245,11 +301,15 @@ export default function WorkItems() {
   }
 
   async function showActivity(item: WorkItem) {
+    setComments([]);
+    setCommentText("");
+    setCommentError("");
     setActivityItem(item);
     setActivity([]);
     setActivityLoading(true);
     setError("");
 
+    void loadComments(item.id);
     try {
       const response = await api.get(`/work-items/${item.id}/activity`);
       const payload = response.data?.data;
@@ -258,6 +318,47 @@ export default function WorkItems() {
       setError(getErrorMessage(err));
     } finally {
       setActivityLoading(false);
+    }
+  }
+
+  async function loadComments(itemId: string) {
+    setCommentsLoading(true);
+    setCommentError("");
+
+    try {
+      const response = await api.get(`/work-items/${itemId}/comments`);
+      const payload = response.data?.data;
+
+      setComments(Array.isArray(payload) ? payload : []);
+    } catch (err: unknown) {
+      setCommentError(getErrorMessage(err));
+      setComments([]);
+    } finally {
+      setCommentsLoading(false);
+    }
+  }
+
+  async function submitComment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!activityItem || !commentText.trim()) {
+      return;
+    }
+
+    setCommentSubmitting(true);
+    setCommentError("");
+
+    try {
+      await api.post(`/work-items/${activityItem.id}/comments`, {
+        content: commentText.trim(),
+      });
+
+      setCommentText("");
+      await loadComments(activityItem.id);
+    } catch (err: unknown) {
+      setCommentError(getErrorMessage(err));
+    } finally {
+      setCommentSubmitting(false);
     }
   }
 
@@ -343,21 +444,28 @@ export default function WorkItems() {
           <div className="search-field">
             <Search size={17} />
             <input
-              value={search}
+              value={filters.search}
               placeholder="Search work items..."
               onChange={(event) => {
-                setSearch(event.target.value);
-                setPage(1);
+                setFilters((current) => ({
+                  ...current,
+                  search: event.target.value,
+                }));
+                setCursorState(resetCursorHistory());
               }}
             />
           </div>
           <div className="filter-select">
             <Filter size={16} />
             <select
-              value={statusFilter}
+              aria-label="Filter by status"
+              value={filters.status}
               onChange={(event) => {
-                setStatusFilter(event.target.value);
-                setPage(1);
+                setFilters((current) => ({
+                  ...current,
+                  status: event.target.value,
+                }));
+                setCursorState(resetCursorHistory());
               }}
             >
               <option value="">All statuses</option>
@@ -370,16 +478,101 @@ export default function WorkItems() {
           </div>
           <select
             aria-label="Filter by priority"
-            value={priorityFilter}
+            value={filters.priority}
             onChange={(event) => {
-              setPriorityFilter(event.target.value);
-              setPage(1);
+              setFilters((current) => ({
+                ...current,
+                priority: event.target.value,
+              }));
+              setCursorState(resetCursorHistory());
             }}
           >
             <option value="">All priorities</option>
             {["LOW", "MEDIUM", "HIGH", "URGENT"].map((value) => (
               <option key={value} value={value}>
                 {value}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by type"
+            value={filters.type}
+            onChange={(event) => {
+              setFilters((current) => ({
+                ...current,
+                type: event.target.value,
+              }));
+              setCursorState(resetCursorHistory());
+            }}
+          >
+            <option value="">All types</option>
+            {["TASK", "BUG", "INCIDENT", "REQUEST"].map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by team"
+            value={filters.teamId}
+            onChange={(event) => {
+              setFilters((current) => ({
+                ...current,
+                teamId: event.target.value,
+              }));
+              setCursorState(resetCursorHistory());
+            }}
+          >
+            <option value="">All teams</option>
+            {teams.map((team) => (
+              <option key={team.id} value={team.id}>
+                {team.name}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by assignee"
+            value={filters.assigneeId}
+            onChange={(event) => {
+              setFilters((current) => ({
+                ...current,
+                assigneeId: event.target.value,
+              }));
+              setCursorState(resetCursorHistory());
+            }}
+          >
+            <option value="">All assignees</option>
+            {currentUser?.id && (
+              <option value={currentUser.id}>Assigned to me</option>
+            )}
+          </select>
+          <select
+            aria-label="Sort order"
+            value={filters.sort}
+            onChange={(event) => {
+              setFilters((current) => ({
+                ...current,
+                sort: event.target.value,
+              }));
+              setCursorState(resetCursorHistory());
+            }}
+          >
+            <option value="createdAt">Newest created</option>
+          </select>
+          <select
+            aria-label="Page size"
+            value={filters.limit}
+            onChange={(event) => {
+              setFilters((current) => ({
+                ...current,
+                limit: Number(event.target.value),
+              }));
+              setCursorState(resetCursorHistory());
+            }}
+          >
+            {[10, 20, 50].map((size) => (
+              <option key={size} value={size}>
+                {size} per page
               </option>
             ))}
           </select>
@@ -391,7 +584,11 @@ export default function WorkItems() {
               <h2>All work items</h2>
               <p>Only items you are authorized to access are shown.</p>
             </div>
-            <span>{items.length} on this page</span>
+            <span>
+              {loading
+                ? "Loading…"
+                : `${resultCount} on this page${hasMore ? ", more available" : ""}`}
+            </span>
           </div>
 
           {loading ? (
@@ -484,18 +681,28 @@ export default function WorkItems() {
           <div className="pagination">
             <button
               className="secondary-button"
-              disabled={page <= 1 || loading}
-              onClick={() => setPage((current) => current - 1)}
+              disabled={cursorState.history.length === 0 || loading}
+              onClick={() =>
+                setCursorState((current) => goToPreviousPage(current))
+              }
             >
               Previous
             </button>
             <span>
-              Page {page} of {totalPages}
+              {cursorState.history.length === 0
+                ? "First page"
+                : `Page ${cursorState.history.length + 1}`}
             </span>
             <button
               className="secondary-button"
-              disabled={page >= totalPages || loading}
-              onClick={() => setPage((current) => current + 1)}
+              disabled={!hasMore || !nextCursor || loading}
+              onClick={() => {
+                if (!nextCursor) {
+                  return;
+                }
+
+                setCursorState((current) => goToNextPage(current, nextCursor));
+              }}
             >
               Next
             </button>
@@ -689,6 +896,74 @@ export default function WorkItems() {
                 ))}
               </div>
             )}
+            <div className="comments-section">
+              <div className="modal-heading">
+                <div>
+                  <p className="eyebrow">DISCUSSION</p>
+                  <h3>Comments ({comments.length})</h3>
+                </div>
+              </div>
+
+              {commentError && (
+                <div className="work-alert" role="alert">
+                  <ShieldAlert size={16} />
+                  {commentError}
+                </div>
+              )}
+
+              {commentsLoading ? (
+                <div className="work-page-state">
+                  <LoaderCircle className="spinner" size={20} />
+                  Loading comments...
+                </div>
+              ) : comments.length === 0 ? (
+                <p className="form-help">
+                  No comments yet. Start the discussion.
+                </p>
+              ) : (
+                <div className="comments-list">
+                  {comments.map((comment) => (
+                    <article className="comment-entry" key={comment.id}>
+                      <strong>
+                        {comment.author?.name ??
+                          comment.author?.email ??
+                          "Team member"}
+                      </strong>
+
+                      <time>
+                        {new Date(comment.createdAt).toLocaleString()}
+                      </time>
+
+                      <p>{comment.content}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              <form onSubmit={submitComment} className="comment-form">
+                <label htmlFor="work-item-comment">Add a comment</label>
+
+                <textarea
+                  id="work-item-comment"
+                  value={commentText}
+                  onChange={(event) => setCommentText(event.target.value)}
+                  placeholder="Share an update or ask a question..."
+                  maxLength={5000}
+                  rows={3}
+                  required
+                />
+
+                <div className="modal-actions">
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    disabled={commentSubmitting || !commentText.trim()}
+                  >
+                    {commentSubmitting ? "Posting..." : "Post comment"}
+                  </button>
+                </div>
+              </form>
+            </div>
           </section>
         </div>
       )}

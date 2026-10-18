@@ -6,6 +6,7 @@ import {
   listWorkItemsSchema,
   transitionWorkItemSchema,
   updateWorkItemSchema,
+  createWorkItemCommentSchema,
 } from "./work-items.validation";
 
 import {
@@ -17,6 +18,8 @@ import {
   getWorkItemActivity,
   getWorkItemDashboard,
   getWorkItemById,
+  createWorkItemComment,
+  getWorkItemComments,
 } from "./work-items.service";
 
 const router = Router();
@@ -189,10 +192,17 @@ router.get("/", requireAuth, async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: result.items,
-      pagination: result.pagination,
+      data: result,
     });
   } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_CURSOR") {
+      res.status(400).json({
+        success: false,
+        message: "INVALID_CURSOR",
+      });
+      return;
+    }
+
     console.error("List work items failed:", error);
 
     res.status(500).json({
@@ -310,7 +320,7 @@ router.post("/:id/claim", requireAuth, async (req, res) => {
   }
 });
 
-router.get("/:id", requireAuth, async (req, res) => {
+router.get("/:id/comments", requireAuth, async (req, res) => {
   try {
     const actor = (req as AuthenticatedRequest).auth;
 
@@ -322,11 +332,11 @@ router.get("/:id", requireAuth, async (req, res) => {
       return;
     }
 
-    const workItem = await getWorkItemById(req.params.id as string, actor);
+    const comments = await getWorkItemComments(req.params.id as string, actor);
 
     res.status(200).json({
       success: true,
-      data: workItem,
+      data: comments,
     });
   } catch (error) {
     const statusByError: Record<string, number> = {
@@ -342,14 +352,74 @@ router.get("/:id", requireAuth, async (req, res) => {
       return;
     }
 
-    console.error("Get work item failed:", error);
+    console.error("Get work-item comments failed:", error);
 
     res.status(500).json({
       success: false,
-      message: "Unable to retrieve work item.",
+      message: "Unable to retrieve work-item comments.",
     });
   }
 });
+
+router.post("/:id/comments", requireAuth, async (req, res) => {
+  try {
+    const parsed = createWorkItemCommentSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid comment data.",
+        errors: parsed.error.issues.map((issue) => ({
+          field: issue.path.join("."),
+          message: issue.message,
+        })),
+      });
+      return;
+    }
+
+    const actor = (req as AuthenticatedRequest).auth;
+
+    if (!actor) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required.",
+      });
+      return;
+    }
+
+    const comment = await createWorkItemComment(
+      req.params.id as string,
+      parsed.data,
+      actor,
+    );
+
+    res.status(201).json({
+      success: true,
+      data: comment,
+    });
+  } catch (error) {
+    const statusByError: Record<string, number> = {
+      WORK_ITEM_NOT_FOUND: 404,
+      WORK_ITEM_ACCESS_DENIED: 403,
+    };
+
+    if (error instanceof Error && statusByError[error.message]) {
+      res.status(statusByError[error.message]).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
+
+    console.error("Create work-item comment failed:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Unable to create work-item comment.",
+    });
+  }
+});
+
 
 router.get("/:id/activity", requireAuth, async (req, res) => {
   try {
@@ -419,5 +489,47 @@ router.get("/dashboard", requireAuth, async (req, res) => {
     });
   }
 });
+
+router.get("/:id", requireAuth, async (req, res) => {
+  try {
+    const actor = (req as AuthenticatedRequest).auth;
+
+    if (!actor) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required.",
+      });
+      return;
+    }
+
+    const workItem = await getWorkItemById(req.params.id as string, actor);
+
+    res.status(200).json({
+      success: true,
+      data: workItem,
+    });
+  } catch (error) {
+    const statusByError: Record<string, number> = {
+      WORK_ITEM_NOT_FOUND: 404,
+      WORK_ITEM_ACCESS_DENIED: 403,
+    };
+
+    if (error instanceof Error && statusByError[error.message]) {
+      res.status(statusByError[error.message]).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
+
+    console.error("Get work item failed:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Unable to retrieve work item.",
+    });
+  }
+});
+
 
 export default router;

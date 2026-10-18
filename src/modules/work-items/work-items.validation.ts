@@ -29,7 +29,7 @@ export const createWorkItemSchema = z.object({
 });
 
 export const listWorkItemsSchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  cursor: z.string().trim().min(1).max(256).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().trim().max(150).optional(),
   status: z
@@ -39,6 +39,7 @@ export const listWorkItemsSchema = z.object({
   type: z.enum(["TASK", "BUG", "INCIDENT", "REQUEST"]).optional(),
   teamId: z.string().uuid().optional(),
   assigneeId: z.string().uuid().optional(),
+  sort: z.enum(["createdAt"]).default("createdAt"),
 });
 
 export const transitionWorkItemSchema = z.object({
@@ -51,6 +52,7 @@ export const transitionWorkItemSchema = z.object({
   ]),
   version: z.coerce.number().int().min(1),
 });
+
 
 export const updateWorkItemSchema = z
   .object({
@@ -81,6 +83,19 @@ export const updateWorkItemSchema = z
   .refine((data) => Object.keys(data).some((key) => key !== "version"), {
     message: "Provide at least one field to update.",
   });
+
+
+export const createWorkItemCommentSchema = z.object({
+  content: z
+    .string()
+    .trim()
+    .min(1, "Comment cannot be empty.")
+    .max(5000, "Comment cannot exceed 5000 characters."),
+});
+
+export type CreateWorkItemCommentInput = z.infer<
+  typeof createWorkItemCommentSchema
+>;
 
 export type UpdateWorkItemInput = z.infer<typeof updateWorkItemSchema>;
 

@@ -675,6 +675,7 @@ h1 {
 .filter-panel {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 16px;
   margin-bottom: 22px;
@@ -711,6 +712,10 @@ h1 {
   color: #172033;
   font: inherit;
   font-size: 13px;
+}
+
+.filter-panel > select {
+  min-width: 140px;
 }
 
 .filter-panel select,

@@ -592,6 +592,323 @@ describe("PATCH /api/work-items/:id", () => {
   });
 });
 
+describe("Work-item comments", () => {
+  it("creates and lists a comment for a team member", async () => {
+    const token = await login("member@newtonite.local");
+
+    const team = await prisma.team.findUniqueOrThrow({
+      where: { name: "Engineering" },
+    });
+
+    const member = await prisma.user.findUniqueOrThrow({
+      where: { email: "member@newtonite.local" },
+      select: { id: true },
+    });
+
+    const item = await prisma.workItem.create({
+      data: {
+        title: "Comment API test item",
+        type: "TASK",
+        priority: "LOW",
+        status: "OPEN",
+        version: 1,
+        teamId: team.id,
+        creatorId: member.id,
+      },
+    });
+
+    try {
+      const createResponse = await request(app)
+        .post(`/api/work-items/${item.id}/comments`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ content: "This is an automated test comment." });
+
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.success).toBe(true);
+      expect(createResponse.body.data.content).toBe(
+        "This is an automated test comment.",
+      );
+      expect(createResponse.body.data.author.email).toBe(
+        "member@newtonite.local",
+      );
+
+      const listResponse = await request(app)
+        .get(`/api/work-items/${item.id}/comments`)
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(listResponse.status).toBe(200);
+      expect(listResponse.body.success).toBe(true);
+      expect(listResponse.body.data).toHaveLength(1);
+      expect(listResponse.body.data[0].id).toBe(createResponse.body.data.id);
+    } finally {
+      await prisma.workItem.delete({ where: { id: item.id } });
+    }
+  });
+
+  it("rejects empty comment content", async () => {
+    const token = await login("member@newtonite.local");
+
+    const team = await prisma.team.findUniqueOrThrow({
+      where: { name: "Engineering" },
+    });
+
+    const member = await prisma.user.findUniqueOrThrow({
+      where: { email: "member@newtonite.local" },
+      select: { id: true },
+    });
+
+    const item = await prisma.workItem.create({
+      data: {
+        title: "Empty comment validation test",
+        type: "TASK",
+        priority: "LOW",
+        status: "OPEN",
+        version: 1,
+        teamId: team.id,
+        creatorId: member.id,
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .post(`/api/work-items/${item.id}/comments`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ content: "   " });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    } finally {
+      await prisma.workItem.delete({ where: { id: item.id } });
+    }
+  });
+
+  it("prevents a Product member from reading Engineering comments", async () => {
+    const productToken = await login("productmember@newtonite.local");
+
+    const engineeringItemId = "9a339589-58ed-4c55-8000-53401754fc2d";
+
+    const response = await request(app)
+      .get(`/api/work-items/${engineeringItemId}/comments`)
+      .set("Authorization", `Bearer ${productToken}`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+  });
+
+  it("prevents a Product member from commenting on an Engineering item", async () => {
+    const productToken = await login("productmember@newtonite.local");
+
+    const engineeringItemId = "9a339589-58ed-4c55-8000-53401754fc2d";
+
+    const response = await request(app)
+      .post(`/api/work-items/${engineeringItemId}/comments`)
+      .set("Authorization", `Bearer ${productToken}`)
+      .send({ content: "This should be forbidden." });
+
+    expect(response.status).toBe(403);
+    expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+  });
+});
+
+describe("GET /api/work-items cursor pagination", () => {
+  async function createCursorTestItems(token: string, count: number) {
+    const team = await prisma.team.findUniqueOrThrow({
+      where: { name: "Engineering" },
+    });
+    const member = await prisma.user.findUniqueOrThrow({
+      where: { email: "member@newtonite.local" },
+      select: { id: true },
+    });
+    const marker = `cursor-pg-${crypto.randomUUID()}`;
+    const createdAt = new Date("2025-03-01T10:00:00.000Z");
+
+    const items = [];
+
+    for (let index = 0; index < count; index += 1) {
+      items.push(
+        await prisma.workItem.create({
+          data: {
+            title: `${marker} item ${String(index + 1).padStart(2, "0")}`,
+            type: index % 2 === 0 ? "TASK" : "BUG",
+            priority: "HIGH",
+            status: "OPEN",
+            version: 1,
+            teamId: team.id,
+            creatorId: member.id,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      );
+    }
+
+    return { marker, items, team, token };
+  }
+
+  async function cleanupCursorTestItems(itemIds: string[]) {
+    await prisma.workItem.deleteMany({
+      where: { id: { in: itemIds } },
+    });
+  }
+
+  it("returns at most the requested limit and a next cursor when more results exist", async () => {
+    const token = await login("member@newtonite.local");
+    const fixture = await createCursorTestItems(token, 3);
+
+    try {
+      const response = await request(app)
+        .get("/api/work-items")
+        .query({ search: fixture.marker, limit: 2 })
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.items).toHaveLength(2);
+      expect(response.body.data.limit).toBe(2);
+      expect(response.body.data.hasMore).toBe(true);
+      expect(response.body.data.nextCursor).toEqual(expect.any(String));
+    } finally {
+      await cleanupCursorTestItems(fixture.items.map((item) => item.id));
+    }
+  });
+
+  it("follows a cursor without duplicating records and keeps equal timestamps ordered by id", async () => {
+    const token = await login("member@newtonite.local");
+    const fixture = await createCursorTestItems(token, 3);
+    const expectedIds = [...fixture.items]
+      .sort((left, right) => right.id.localeCompare(left.id))
+      .map((item) => item.id);
+
+    try {
+      const firstPage = await request(app)
+        .get("/api/work-items")
+        .query({ search: fixture.marker, limit: 2 })
+        .set("Authorization", `Bearer ${token}`);
+
+      const secondPage = await request(app)
+        .get("/api/work-items")
+        .query({
+          search: fixture.marker,
+          limit: 2,
+          cursor: firstPage.body.data.nextCursor,
+        })
+        .set("Authorization", `Bearer ${token}`);
+
+      const firstIds = firstPage.body.data.items.map(
+        (item: { id: string }) => item.id,
+      );
+      const secondIds = secondPage.body.data.items.map(
+        (item: { id: string }) => item.id,
+      );
+
+      expect(firstIds).toEqual(expectedIds.slice(0, 2));
+      expect(secondIds).toEqual(expectedIds.slice(2));
+      expect(new Set([...firstIds, ...secondIds]).size).toBe(3);
+      expect(secondPage.body.data.hasMore).toBe(false);
+      expect(secondPage.body.data.nextCursor).toBeNull();
+    } finally {
+      await cleanupCursorTestItems(fixture.items.map((item) => item.id));
+    }
+  });
+
+  it("rejects invalid cursors and invalid limits", async () => {
+    const token = await login("member@newtonite.local");
+
+    const invalidCursor = await request(app)
+      .get("/api/work-items")
+      .query({ cursor: "not-a-valid-cursor" })
+      .set("Authorization", `Bearer ${token}`);
+
+    const invalidLimit = await request(app)
+      .get("/api/work-items")
+      .query({ limit: 101 })
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(invalidCursor.status).toBe(400);
+    expect(invalidCursor.body.message).toBe("INVALID_CURSOR");
+    expect(invalidLimit.status).toBe(400);
+    expect(invalidLimit.body.success).toBe(false);
+  });
+
+  it("applies search and filters on every cursor page", async () => {
+    const token = await login("member@newtonite.local");
+    const fixture = await createCursorTestItems(token, 4);
+
+    try {
+      const firstPage = await request(app)
+        .get("/api/work-items")
+        .query({
+          search: fixture.marker,
+          type: "TASK",
+          status: "OPEN",
+          limit: 1,
+        })
+        .set("Authorization", `Bearer ${token}`);
+
+      const secondPage = await request(app)
+        .get("/api/work-items")
+        .query({
+          search: fixture.marker,
+          type: "TASK",
+          status: "OPEN",
+          limit: 1,
+          cursor: firstPage.body.data.nextCursor,
+        })
+        .set("Authorization", `Bearer ${token}`);
+
+      const allItems = [
+        ...firstPage.body.data.items,
+        ...secondPage.body.data.items,
+      ];
+
+      expect(allItems.length).toBeGreaterThan(1);
+      expect(
+        allItems.every(
+          (item: { type: string; status: string; title: string }) =>
+            item.type === "TASK" &&
+            item.status === "OPEN" &&
+            item.title.includes(fixture.marker),
+        ),
+      ).toBe(true);
+    } finally {
+      await cleanupCursorTestItems(fixture.items.map((item) => item.id));
+    }
+  });
+
+  it("enforces team authorization on every page", async () => {
+    const memberToken = await login("member@newtonite.local");
+    const productToken = await login("productmember@newtonite.local");
+    const fixture = await createCursorTestItems(memberToken, 3);
+
+    try {
+      const authorized = await request(app)
+        .get("/api/work-items")
+        .query({ search: fixture.marker, limit: 2 })
+        .set("Authorization", `Bearer ${memberToken}`);
+
+      const unauthorizedFirst = await request(app)
+        .get("/api/work-items")
+        .query({ search: fixture.marker, limit: 2 })
+        .set("Authorization", `Bearer ${productToken}`);
+
+      const unauthorizedNext = await request(app)
+        .get("/api/work-items")
+        .query({
+          search: fixture.marker,
+          limit: 2,
+          cursor: authorized.body.data.nextCursor,
+        })
+        .set("Authorization", `Bearer ${productToken}`);
+
+      expect(authorized.body.data.items).toHaveLength(2);
+      expect(unauthorizedFirst.body.data.items).toHaveLength(0);
+      expect(unauthorizedFirst.body.data.hasMore).toBe(false);
+      expect(unauthorizedNext.body.data.items).toHaveLength(0);
+    } finally {
+      await cleanupCursorTestItems(fixture.items.map((item) => item.id));
+    }
+  });
+});
+
 afterAll(async () => {
   await prisma.$disconnect();
 });

@@ -6,6 +6,12 @@ import type { ListWorkItemsInput } from "./work-items.validation";
 import type { TransitionWorkItemInput } from "./work-items.validation";
 import { enqueueOutboxJob } from "../outbox/outbox.service";
 import { createHash } from "node:crypto";
+import type { CreateWorkItemCommentInput } from "./work-items.validation";
+import {
+  decodeWorkItemCursor,
+  encodeWorkItemCursor,
+} from "./work-items.cursor";
+import type { WorkItemListResponse } from "./work-items.list";
 
 export async function createWorkItem(
   input: CreateWorkItemInput,
@@ -228,25 +234,26 @@ export async function createWorkItem(
 // Add this function below createWorkItem.
 // Move the import above to the other imports at the top of the file.
 
+function emptyWorkItemList(limit: number): WorkItemListResponse {
+  return {
+    items: [],
+    nextCursor: null,
+    hasMore: false,
+    limit,
+  };
+}
+
 export async function listWorkItems(
   input: ListWorkItemsInput,
   actor: AuthenticatedUser,
-) {
+): Promise<WorkItemListResponse> {
   const allowedTeamIds =
     actor.globalRole === "ADMIN"
       ? undefined
       : actor.memberships.map((membership) => membership.teamId);
 
   if (allowedTeamIds && allowedTeamIds.length === 0) {
-    return {
-      items: [],
-      pagination: {
-        page: input.page,
-        limit: input.limit,
-        total: 0,
-        totalPages: 0,
-      },
-    };
+    return emptyWorkItemList(input.limit);
   }
 
   const teamIds = input.teamId
@@ -256,16 +263,10 @@ export async function listWorkItems(
     : allowedTeamIds;
 
   if (teamIds && teamIds.length === 0) {
-    return {
-      items: [],
-      pagination: {
-        page: input.page,
-        limit: input.limit,
-        total: 0,
-        totalPages: 0,
-      },
-    };
+    return emptyWorkItemList(input.limit);
   }
+
+  const cursor = input.cursor ? decodeWorkItemCursor(input.cursor) : null;
 
   const where = {
     ...(teamIds ? { teamId: { in: teamIds } } : {}),
@@ -281,33 +282,47 @@ export async function listWorkItems(
           },
         }
       : {}),
+    ...(cursor
+      ? {
+          OR: [
+            { createdAt: { lt: cursor.createdAt } },
+            {
+              AND: [
+                { createdAt: { equals: cursor.createdAt } },
+                { id: { lt: cursor.id } },
+              ],
+            },
+          ],
+        }
+      : {}),
   };
 
-  const skip = (input.page - 1) * input.limit;
+  const rows = await prisma.workItem.findMany({
+    where,
+    take: input.limit + 1,
+    orderBy:
+      input.sort === "createdAt"
+        ? [{ createdAt: "desc" }, { id: "desc" }]
+        : [{ createdAt: "desc" }, { id: "desc" }],
+    include: {
+      team: { select: { id: true, name: true } },
+      creator: { select: { id: true, name: true } },
+      assignee: { select: { id: true, name: true } },
+    },
+  });
 
-  const [items, total] = await prisma.$transaction([
-    prisma.workItem.findMany({
-      where,
-      skip,
-      take: input.limit,
-      orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
-      include: {
-        team: { select: { id: true, name: true } },
-        creator: { select: { id: true, name: true } },
-        assignee: { select: { id: true, name: true } },
-      },
-    }),
-    prisma.workItem.count({ where }),
-  ]);
+  const hasMore = rows.length > input.limit;
+  const items = hasMore ? rows.slice(0, input.limit) : rows;
+  const lastItem = items[items.length - 1];
 
   return {
     items,
-    pagination: {
-      page: input.page,
-      limit: input.limit,
-      total,
-      totalPages: Math.ceil(total / input.limit),
-    },
+    nextCursor:
+      hasMore && lastItem
+        ? encodeWorkItemCursor(lastItem.createdAt, lastItem.id)
+        : null,
+    hasMore,
+    limit: input.limit,
   };
 }
 
@@ -799,4 +814,94 @@ export async function getWorkItemDashboard(actor: AuthenticatedUser) {
     unassignedUrgent,
     awaitingMyApproval,
   };
+}
+
+
+export async function createWorkItemComment(
+  workItemId: string,
+  input: CreateWorkItemCommentInput,
+  actor: AuthenticatedUser,
+) {
+  return prisma.$transaction(async (tx) => {
+    const item = await tx.workItem.findUnique({
+      where: { id: workItemId },
+      select: { id: true, teamId: true },
+    });
+
+    if (!item) {
+      throw new Error("WORK_ITEM_NOT_FOUND");
+    }
+
+    const membership = actor.memberships.find(
+      (entry) => entry.teamId === item.teamId,
+    );
+
+    if (actor.globalRole !== "ADMIN" && !membership) {
+      throw new Error("WORK_ITEM_ACCESS_DENIED");
+    }
+
+    const comment = await tx.comment.create({
+      data: {
+        workItemId: item.id,
+        authorId: actor.id,
+        content: input.content,
+      },
+      include: {
+        author: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+    });
+
+    await tx.activityEvent.create({
+      data: {
+        workItemId: item.id,
+        actorId: actor.id,
+        action: "COMMENTED",
+        details: {
+          commentId: comment.id,
+        },
+      },
+    });
+
+    await enqueueOutboxJob(tx, "WORK_ITEM_COMMENTED", {
+      workItemId: item.id,
+      actorId: actor.id,
+      commentId: comment.id,
+    });
+
+    return comment;
+  });
+}
+
+export async function getWorkItemComments(
+  workItemId: string,
+  actor: AuthenticatedUser,
+) {
+  const item = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    select: { id: true, teamId: true },
+  });
+
+  if (!item) {
+    throw new Error("WORK_ITEM_NOT_FOUND");
+  }
+
+  const hasTeamAccess = actor.memberships.some(
+    (membership) => membership.teamId === item.teamId,
+  );
+
+  if (actor.globalRole !== "ADMIN" && !hasTeamAccess) {
+    throw new Error("WORK_ITEM_ACCESS_DENIED");
+  }
+
+  return prisma.comment.findMany({
+    where: { workItemId: item.id },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    include: {
+      author: {
+        select: { id: true, name: true, email: true },
+      },
+    },
+  });
 }
