@@ -140,14 +140,43 @@ describe("Work-item authorization", () => {
   it("prevents a Product member from viewing Engineering activity", async () => {
     const productToken = await login("productmember@newtonite.local");
 
-    const engineeringItemId = "9a339589-58ed-4c55-8000-53401754fc2d";
+    const team = await prisma.team.findUniqueOrThrow({
+      where: { name: "Engineering" },
+    });
 
-    const response = await request(app)
-      .get(`/api/work-items/${engineeringItemId}/activity`)
-      .set("Authorization", `Bearer ${productToken}`);
+    const member = await prisma.user.findUniqueOrThrow({
+      where: { email: "member@newtonite.local" },
+      select: { id: true },
+    });
 
-    expect(response.status).toBe(403);
-    expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+    const item = await prisma.workItem.create({
+      data: {
+        title: "Cross-team activity authorization test",
+        type: "TASK",
+        priority: "LOW",
+        status: "OPEN",
+        version: 1,
+        teamId: team.id,
+        creatorId: member.id,
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .get(`/api/work-items/${item.id}/activity`)
+        .set("Authorization", `Bearer ${productToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+    } finally {
+      await prisma.activityEvent.deleteMany({
+        where: { workItemId: item.id },
+      });
+
+      await prisma.workItem.delete({
+        where: { id: item.id },
+      });
+    }
   });
 
   it("prevents a regular member from approving a work item", async () => {
@@ -685,28 +714,86 @@ describe("Work-item comments", () => {
   it("prevents a Product member from reading Engineering comments", async () => {
     const productToken = await login("productmember@newtonite.local");
 
-    const engineeringItemId = "9a339589-58ed-4c55-8000-53401754fc2d";
+    const team = await prisma.team.findUniqueOrThrow({
+      where: { name: "Engineering" },
+    });
 
-    const response = await request(app)
-      .get(`/api/work-items/${engineeringItemId}/comments`)
-      .set("Authorization", `Bearer ${productToken}`);
+    const member = await prisma.user.findUniqueOrThrow({
+      where: { email: "member@newtonite.local" },
+      select: { id: true },
+    });
 
-    expect(response.status).toBe(403);
-    expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+    const item = await prisma.workItem.create({
+      data: {
+        title: "Cross-team comment reading test",
+        type: "TASK",
+        priority: "LOW",
+        status: "OPEN",
+        version: 1,
+        teamId: team.id,
+        creatorId: member.id,
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .get(`/api/work-items/${item.id}/comments`)
+        .set("Authorization", `Bearer ${productToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+    } finally {
+      await prisma.comment.deleteMany({
+        where: { workItemId: item.id },
+      });
+
+      await prisma.workItem.delete({
+        where: { id: item.id },
+      });
+    }
   });
 
   it("prevents a Product member from commenting on an Engineering item", async () => {
     const productToken = await login("productmember@newtonite.local");
 
-    const engineeringItemId = "9a339589-58ed-4c55-8000-53401754fc2d";
+    const team = await prisma.team.findUniqueOrThrow({
+      where: { name: "Engineering" },
+    });
 
-    const response = await request(app)
-      .post(`/api/work-items/${engineeringItemId}/comments`)
-      .set("Authorization", `Bearer ${productToken}`)
-      .send({ content: "This should be forbidden." });
+    const member = await prisma.user.findUniqueOrThrow({
+      where: { email: "member@newtonite.local" },
+      select: { id: true },
+    });
 
-    expect(response.status).toBe(403);
-    expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+    const item = await prisma.workItem.create({
+      data: {
+        title: "Cross-team comment creation test",
+        type: "TASK",
+        priority: "LOW",
+        status: "OPEN",
+        version: 1,
+        teamId: team.id,
+        creatorId: member.id,
+      },
+    });
+
+    try {
+      const response = await request(app)
+        .post(`/api/work-items/${item.id}/comments`)
+        .set("Authorization", `Bearer ${productToken}`)
+        .send({ content: "This should be forbidden." });
+
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe("WORK_ITEM_ACCESS_DENIED");
+    } finally {
+      await prisma.comment.deleteMany({
+        where: { workItemId: item.id },
+      });
+
+      await prisma.workItem.delete({
+        where: { id: item.id },
+      });
+    }
   });
 });
 
