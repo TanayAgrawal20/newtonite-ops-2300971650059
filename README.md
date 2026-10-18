@@ -39,11 +39,8 @@ Install the following before running the project:
 
 ```bash
 git clone https://github.com/TanayAgrawal20/newtonite-ops-2300971650059.git
-cd newtonite-ops
+cd newtonite-ops-2300971650059
 ```
-
-Replace the placeholder URL with your actual GitHub repository URL.
-
 ### 2. Configure environment variables
 
 Create a local `.env` file by copying the example:
