@@ -63,7 +63,7 @@ describe("processOutboxBatch", () => {
       failed: 0,
     });
 
-    expect(mocks.updateMany).toHaveBeenCalledTimes(3);
+    expect(mocks.updateMany).toHaveBeenCalledTimes(4);
     expect(mocks.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
         where: { id: "job-1", status: "PROCESSING" },

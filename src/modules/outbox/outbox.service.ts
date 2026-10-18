@@ -27,15 +27,16 @@ export async function enqueueOutboxJob(
 export async function processOutboxBatch(batchSize = 10) {
   const safeBatchSize = Math.max(1, Math.min(Math.floor(batchSize), 100));
   const now = new Date();
-
-  // Recover jobs whose worker lock expired after a crash.
   const staleLockTime = new Date(Date.now() - 5 * 60 * 1000);
 
+  // Recover expired locks without exceeding the retry limit.
+  const staleLockWhere = {
+    status: "PROCESSING" as const,
+    lockedAt: { lte: staleLockTime },
+  };
+
   await prisma.outboxJob.updateMany({
-    where: {
-      status: "PROCESSING",
-      lockedAt: { lte: staleLockTime },
-    },
+    where: { ...staleLockWhere, attempts: { lt: 5 } },
     data: {
       status: "PENDING",
       lockedAt: null,
@@ -44,6 +45,14 @@ export async function processOutboxBatch(batchSize = 10) {
     },
   });
 
+  await prisma.outboxJob.updateMany({
+    where: { ...staleLockWhere, attempts: { gte: 5 } },
+    data: {
+      status: "FAILED",
+      lockedAt: null,
+      lastError: "Worker lock expired after maximum attempts",
+    },
+  });
   const jobs = await prisma.outboxJob.findMany({
     where: {
       status: "PENDING",
